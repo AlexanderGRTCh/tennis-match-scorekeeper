@@ -41,6 +41,8 @@ class RallyAnimator:
         self.base_seed = seed
         # Default: 25% slower than baseline
         self.speed_multiplier = 0.75
+        # Target total duration (seconds) for a planned point at 1.0x speed
+        self.target_total_s = 2.0
         self._segments: List[Segment] = []
         self._elapsed = 0.0
         self._total = 0.0
@@ -174,6 +176,12 @@ class RallyAnimator:
             end_px = self.court.to_px(end_x_m, end_y_m)
             segs.append(Segment("out", bounce_px, end_px, 0.20, striker_is_a=winner_is_a))
 
+        # Normalize total duration to target (2s at 1.0x)
+        total = sum(s.duration_s for s in segs)
+        if total > 0:
+            scale = self.target_total_s / total
+            for s in segs:
+                s.duration_s *= scale
         self._segments = segs
         self._elapsed = 0.0
         self._total = sum(s.duration_s for s in segs)

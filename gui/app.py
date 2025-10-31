@@ -97,8 +97,8 @@ def run(argv=None) -> int:
     umpire = UmpireChairSprite(x_m=-0.8, y_m=C.NET_Y_FROM_TOP_M)
 
     animator = RallyAnimator(court, seed=args.seed)
-    # Default to 0.75x if present; else first step
-    speed_idx = C.SPEED_STEPS.index(0.75) if 0.75 in C.SPEED_STEPS else 0
+    # Default to 0.25x per request (slow motion by default)
+    speed_idx = C.SPEED_STEPS.index(0.25) if 0.25 in C.SPEED_STEPS else 0
     hud.update(speed_mult=C.SPEED_STEPS[speed_idx])
 
     # Prompt for configuration unless flags provided and --no-prompt
@@ -219,7 +219,7 @@ def run(argv=None) -> int:
     ball_trail: list[tuple[float, float]] = []
 
     def draw_everything():
-        """Draw court players trail ball HUD then flip the frame."""
+        """Draw court, players, trail, ball, and HUD (no flip here)."""
         screen.fill((10, 18, 24))
         court.draw(screen)
         # Draw chair umpire tower (static)
@@ -264,7 +264,6 @@ def run(argv=None) -> int:
                 screen.blit(dot, (int(tx) - r, int(ty) - r))
         ball.draw(screen)
         hud.draw()
-        pygame.display.flip()
 
     current_server_is_a = False
     last_outcome: Optional[PointOutcome] = None
@@ -284,6 +283,13 @@ def run(argv=None) -> int:
         serve_pos_m, recv_pos_m = court.serve_positions(current_server_is_a, outcome.side)
         player_a.move_to(court.to_px(*serve_pos_m if current_server_is_a else recv_pos_m))
         player_b.move_to(court.to_px(*recv_pos_m if current_server_is_a else serve_pos_m))
+        # Reset per-point visual effects so contact markers and trails reinitialize
+        # like a fresh rally. This fixes the issue where hit markers only appeared
+        # on the first point because indices were reused across points.
+        nonlocal hit_markers, hit_indices_seen, ball_trail
+        hit_markers = []
+        hit_indices_seen.clear()
+        ball_trail = []
         # Plan animation
         idx = plan_index if plan_index is not None else point_counter
         animator.plan(
@@ -304,11 +310,18 @@ def run(argv=None) -> int:
 
     running = True
     playing_anim = False
+    # Advance control: only fetch/play next point when user requests
+    advance_requested = False
+    # Poll-based edge detection for Space (in case KEYDOWN is missed on some systems)
+    space_held = False
     # Terminal overlay (e.g., OUT / MISS / NET)
     overlay_pos = None
     overlay_text = None
     overlay_color = (255, 255, 255)
     overlay_timer = 0.0
+    # First-serve fault banner (simple center-bottom banner replacing old approach)
+    fault_banner_text: Optional[str] = None
+    fault_banner_timer: float = 0.0
 
     target_aspect = (args.width / args.height) if args.height else (C.DEFAULT_WINDOW[0] / C.DEFAULT_WINDOW[1])
 
@@ -352,8 +365,8 @@ def run(argv=None) -> int:
             elif event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     running = False
-                elif event.key == pygame.K_SPACE:
-                    playing_anim = True
+                elif event.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP_ENTER):
+                    advance_requested = True
                 elif event.key == pygame.K_r:
                     # Always replay the previously completed point using its original index
                     if last_point_index is not None and (last_point_index in plan_cache):
@@ -369,29 +382,48 @@ def run(argv=None) -> int:
                     animator.set_speed_multiplier(mul)
                     hud.update(speed_mult=mul)
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                playing_anim = True
+                advance_requested = True
 
-        # If no current outcome, fetch next
-        if current_outcome is None and (not hud.state.match_over):
-            try:
-                current_outcome = next(stream)
-                point_counter += 1
-                # Update HUD to reflect model state after this point
-                hud.update(
-                    game_text=current_outcome.game_text,
-                    games=current_outcome.games,
-                    sets=current_outcome.sets,
-                    bias=current_outcome.bias,
-                    match_over=current_outcome.match_over,
-                    match_winner_name=current_outcome.match_winner_name,
-                )
-                current_point_index = point_counter
-                plan_for_outcome(current_outcome, current_point_index)
-                animator.reset_playback()
-                playing_anim = True
-                # do not update last_outcome or last_point until animation completes
-            except StopIteration:
-                hud.update(match_over=True, match_winner_name=hud.state.match_winner_name)
+        # Also poll for Space edge if the window has focus
+        try:
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_SPACE] and not space_held:
+                advance_requested = True
+                space_held = True
+            elif not keys[pygame.K_SPACE]:
+                space_held = False
+        except Exception:
+            pass
+
+        # Only advance or fetch next when the user requests it
+        if advance_requested:
+            advance_requested = False
+            if not hud.state.match_over:
+                if current_outcome is None:
+                    try:
+                        current_outcome = next(stream)
+                        point_counter += 1
+                        # Update HUD to reflect model state after this point
+                        hud.update(
+                            game_text=current_outcome.game_text,
+                            games=current_outcome.games,
+                            sets=current_outcome.sets,
+                            bias=current_outcome.bias,
+                            match_over=current_outcome.match_over,
+                            match_winner_name=current_outcome.match_winner_name,
+                        )
+                        current_point_index = point_counter
+                        plan_for_outcome(current_outcome, current_point_index)
+                        animator.reset_playback()
+                        playing_anim = True
+                        # do not update last_outcome or last_point until animation completes
+                    except StopIteration:
+                        hud.update(match_over=True, match_winner_name=hud.state.match_winner_name)
+                else:
+                    # A point is prepared; start playback on request
+                    if not playing_anim:
+                        animator.reset_playback()
+                        playing_anim = True
 
         # Animate if requested
         if playing_anim and current_outcome is not None:
@@ -403,7 +435,7 @@ def run(argv=None) -> int:
 
                 This makes the ball look a bit larger at the top of flight.
                 """
-                nonlocal overlay_text, overlay_color, overlay_timer, overlay_pos, prev_seg_kind
+                nonlocal overlay_text, overlay_color, overlay_timer, overlay_pos, prev_seg_kind, fault_banner_text, fault_banner_timer
                 ball.move_to(pos_px)
                 if seg.kind in ("flight", "out"):
                     # Simple parabola for apparent height
@@ -415,34 +447,7 @@ def run(argv=None) -> int:
                 ball_trail.append(pos_px)
                 if len(ball_trail) > 24:
                     del ball_trail[0]
-                # Immediate NET cue when a net segment begins
-                if getattr(seg, 'kind', None) == 'net' and local_t < 0.05:
-                    overlay_text = "NET"
-                    overlay_color = (200, 170, 0)
-                    overlay_pos = pos_px
-                    overlay_timer = 0.8
-                # Show explicit first serve fault banner on the brief pause before second serve
-                if getattr(seg, 'kind', None) == 'pause':
-                    # Use the prior segment kind to decide NET vs OUT text
-                    if prev_seg_kind == 'net':
-                        overlay_text = "NET second serve"
-                        overlay_color = (200, 170, 0)
-                    elif prev_seg_kind == 'out':
-                        overlay_text = "OUT second serve"
-                        overlay_color = (236, 88, 64)
-                    else:
-                        overlay_text = "FAULT second serve"
-                        overlay_color = (250, 200, 40)
-                    # Pin overlay near the target service box center so it's visible
-                    try:
-                        box = court.service_box_rect_px(current_server_is_a, current_outcome.side)
-                        overlay_pos = (box.centerx, box.centery)
-                    except Exception:
-                        overlay_pos = pos_px
-                    overlay_timer = 1.0
-                # Remember segment kind for next frame (to detect pause after a fault)
-                prev_seg_kind = getattr(seg, 'kind', None)
-
+                                                # Remember segment kind for next frame (to detect pause after a fault)\n                # New simple first-serve fault banner: when a 'pause' segment follows a\n                # fault, show a large banner under the court (no per-ball overlays).\n                if getattr(seg, 'kind', None) == 'pause':\n                    if prev_seg_kind in ('net', 'out'):\n                        fault_banner_text = 'SECOND SERVE' if prev_seg_kind == 'net' else 'SECOND SERVE'\n                        fault_banner_timer = 1.2\n                prev_seg_kind = getattr(seg, 'kind', None)\n
             def move_players(ball_pos, seg_index, seg, scaled_dt, local_t):
                 # Determine roles from segment attribution if available
                 striker_is_a = getattr(seg, 'striker_is_a', None)
@@ -537,50 +542,41 @@ def run(argv=None) -> int:
                     pygame.draw.circle(screen, c, (x0, y0), 6, 2)
                     next_markers.append(((hx, hy), c, ttl))
             hit_markers = next_markers
-        # Draw terminal overlay briefly after point ends
-        if overlay_timer > 0 and overlay_pos is not None and overlay_text:
+        # Draw terminal overlay at top center only (OUT, NET, MISS) so the
+        # area near the ball stays clean.
+        if overlay_timer > 0 and overlay_text:
             overlay_timer = max(0.0, overlay_timer - dt)
-            # Always render label text in white for maximum contrast
-            label = pygame.font.SysFont("arial", 24, bold=True).render(overlay_text, True, (255, 255, 255))
-            lx = int(overlay_pos[0] + 10)
-            ly = int(overlay_pos[1] - 14)
-            # Clamp label to the visible window
-            max_x = max(0, screen.get_width() - label.get_width() - 8)
-            max_y = max(0, screen.get_height() - label.get_height() - 8)
-            lx = max(8, min(lx, max_x))
-            ly = max(8, min(ly, max_y))
-            bg = pygame.Surface((label.get_width() + 10, label.get_height() + 6), pygame.SRCALPHA)
-            bg.fill((0, 0, 0, 170))
-            # Add a thin colored border to hint the reason color
-            import pygame as _pg
-            _pg.draw.rect(bg, overlay_color, bg.get_rect(), 2)
-            screen.blit(bg, (lx - 5, ly - 3))
-            screen.blit(label, (lx, ly))
-            # Also draw a small copy at top center for guaranteed visibility
             label2 = pygame.font.SysFont("arial", 20, bold=True).render(overlay_text, True, (255, 255, 255))
             tx = (screen.get_width() - label2.get_width()) // 2
             ty = 8
             bg2 = pygame.Surface((label2.get_width() + 8, label2.get_height() + 4), pygame.SRCALPHA)
             bg2.fill((0, 0, 0, 140))
-            _pg.draw.rect(bg2, overlay_color, bg2.get_rect(), 1)
+            pygame.draw.rect(bg2, overlay_color, bg2.get_rect(), 1)
             screen.blit(bg2, (tx - 4, ty - 2))
             screen.blit(label2, (tx, ty))
-            # Marker shapes
-            import pygame as _pg
-            if overlay_text == "OUT":
-                # Draw a small red X at terminal point
-                x0, y0 = int(overlay_pos[0]), int(overlay_pos[1])
-                l = 8
-                _pg.draw.line(screen, overlay_color, (x0 - l, y0 - l), (x0 + l, y0 + l), 2)
-                _pg.draw.line(screen, overlay_color, (x0 - l, y0 + l), (x0 + l, y0 - l), 2)
-            elif overlay_text == "MISS":
-                # Draw a white ring
-                x0, y0 = int(overlay_pos[0]), int(overlay_pos[1])
-                _pg.draw.circle(screen, (230, 230, 230), (x0, y0), 9, 2)
+        # Draw first-serve fault banner under the court (simple big yellow text)
+        if fault_banner_timer > 0 and fault_banner_text:
+            fault_banner_timer = max(0.0, fault_banner_timer - dt)
+            banner_font = pygame.font.SysFont("arial", 60, bold=True)
+            banner_surf = banner_font.render(fault_banner_text, True, (255, 221, 0))
+            ox, oy = court.layout.origin_px
+            _, ch = court.layout.size_px
+            bx = (screen.get_width() - banner_surf.get_width()) // 2
+            by = int(oy + ch + 20)
+            by = min(by, screen.get_height() - banner_surf.get_height() - 8)
+            bg = pygame.Surface((banner_surf.get_width() + 20, banner_surf.get_height() + 10), pygame.SRCALPHA)
+            bg.fill((0, 0, 0, 140))
+            screen.blit(bg, (bx - 10, by - 5))
+            screen.blit(banner_surf, (bx, by))
 
+        # Present the composed frame (moved flip here to ensure overlays are visible)
+        pygame.display.flip()
     pygame.quit()
     return 0
 
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(run())
+
+
+
