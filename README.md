@@ -2,6 +2,18 @@ Tennis Match Scorekeeper with a Pygame GUI
 
 This is a small but complete tennis match simulator and viewer. The engine decides point outcomes with a simple momentum model and the GUI renders a horizontal court with a short animated rally for each point. I focused on clean structure and repeatable visuals rather than throwing in heavy assets or physics, so it’s easy to read and tweak.
 
+Why It Matters
+
+Momentum bias turns a toy simulator into a thinking tool. You can form a hypothesis about how small nudges shape match flow, visualize the effect immediately, and iterate with parameters that are safe and observable. Deterministic runs and the live bias bar make experiments repeatable so decisions are based on behavior rather than anecdotes.
+
+Skills Demonstrated
+
+Simulation, probabilistic modeling, deterministic systems, UI, event loops, performance tuning.
+
+Teamwork Readiness
+
+Clean modules, readable code, and seed‑based reproducibility that makes reviews and bug reports concrete.
+
 Getting Started
 
 Install Python 3.10 or newer. Create a virtual environment if that’s your workflow. Install the only runtime dependency with:
